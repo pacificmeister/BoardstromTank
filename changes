@@ -1,3 +1,6 @@
+v0.3:
+	fix: executable bits on setup/run scripts (PackageManager refused v0.2 with "setup file not executable")
+
 v0.2:
 	SetupHelper / PackageManager packaging
 	configuration moved to the GX UI (tank Setup page), persisted in localsettings
