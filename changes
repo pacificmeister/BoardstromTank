@@ -1,0 +1,9 @@
+v0.2:
+	SetupHelper / PackageManager packaging
+	configuration moved to the GX UI (tank Setup page), persisted in localsettings
+	out-of-the-box calibration defaults (empty 500 mm, full 50 mm) so a level shows immediately
+	one private D-Bus connection per tank service (fixes registration, enables multiple sensors)
+	config.json removed
+
+v0.1:
+	initial beta: passive BLE scan via BlueZ D-Bus, com.victronenergy.tank services, config.json calibration

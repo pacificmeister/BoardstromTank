@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# setup script for BoardstromTank
+#
+# Installs the dbus-boardstrom-tank service, which listens for the
+# Boardstrom radar tank sensor's BLE advertisements and publishes each
+# sensor as a com.victronenergy.tank service (Remote Console, GX touch
+# display, VRM, MQTT).
+#
+# No system files are modified. The only install action is the service in
+# services/, so SetupHelper's standard automated install/uninstall handles
+# everything.
+
+standardPromptAndActions='yes'
+
+#### following line incorporates helper resources into this script
+source "/data/SetupHelper/HelperResources/IncludeHelpers"
+#### end of lines to include helper resources
