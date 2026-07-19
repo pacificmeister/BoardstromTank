@@ -1,3 +1,7 @@
+v0.4:
+	support advert v2 (firmware version byte + boost status bits); parse both v1 and v2
+	(bytes 0-11 unchanged, v2 moves the checksum and appends a firmware-version byte)
+
 v0.3:
 	fix: executable bits on setup/run scripts (PackageManager refused v0.2 with "setup file not executable")
 

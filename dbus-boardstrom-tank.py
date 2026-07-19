@@ -7,17 +7,19 @@ D-Bus API and publishes each sensor as a com.victronenergy.tank service, so
 the tank shows up on the Cerbo/GX like any wired sender: in the Remote
 Console, on the GX display, in VRM, and over MQTT.
 
-Advert v1 (manufacturer data, company id 0xFFFF; BlueZ hands us the 13-byte
-payload AFTER the company id):
+Advert (manufacturer data, company id 0xFFFF; BlueZ hands us the payload AFTER
+the company id). v2 = 14 bytes; v1 = 13 bytes (bytes 0..11 identical):
   p0      magic 0x42 ('B')
-  p1      version 0x01
+  p1      version 0x01 (v1) or 0x02 (v2)
   p2..3   distance mm u16 LE, 0xFFFF = no target
   p4..5   battery mV u16 LE, 0xFFFF = n/a
   p6      temperature degC i8, 0x7F = n/a
-  p7      status: bits 0-2 quality 0-7, bit 3 unstable (slosh)
+  p7      status: bits 0-2 quality 0-7, bit 3 unstable, bit 4 boost, bit 5 boost-off
   p8..9   sync counter u16 LE
   p10..11 sensor id u16 LE
-  p12     checksum, XOR of p0..p11
+  p12     v1: checksum XOR p0..p11 | v2: firmware version u8
+  p13     v2 only: checksum XOR p0..p12
+We only need distance; the boost/fw fields are ignored here.
 
 Because 0xFFFF is the shared Bluetooth SIG test id, ALL FIVE checks run before
 a packet is trusted: length, company id, magic, version, checksum.
@@ -57,10 +59,12 @@ sys.path.insert(
 from vedbus import VeDbusService  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = '0.2.0-beta'
+VERSION = '0.4.0-beta'
 COMPANY_ID = 0xFFFF
 MAGIC = 0x42
-ADVERT_VERSION = 0x01
+# Supported advert versions -> payload length. v1 = 13 bytes; v2 = 14 (adds a
+# firmware-version byte at [12], checksum moves to [13]). Bytes 0..11 identical.
+ADVERT_LENGTHS = {0x01: 13, 0x02: 14}
 # A sensor measures every 60 s in steady state; after this long with no advert
 # the tank is marked disconnected (shows as such in the GX UI).
 TIMEOUT_S = 300
@@ -72,15 +76,16 @@ log = logging.getLogger('boardstrom-tank')
 
 
 def parse_advert(payload):
-    """Boardstrom advert v1 -> dict, or None if not ours / corrupt."""
-    if len(payload) != 13:
+    """Boardstrom advert v1/v2 -> dict, or None if not ours / corrupt."""
+    if len(payload) < 2 or payload[0] != MAGIC:
         return None
-    if payload[0] != MAGIC or payload[1] != ADVERT_VERSION:
+    n = ADVERT_LENGTHS.get(payload[1])
+    if n is None or len(payload) != n:
         return None
     xor = 0
-    for b in payload[:12]:
+    for b in payload[:n - 1]:
         xor ^= b
-    if xor != payload[12]:
+    if xor != payload[n - 1]:
         return None
     distance = payload[2] | (payload[3] << 8)
     battery = payload[4] | (payload[5] << 8)
@@ -94,6 +99,8 @@ def parse_advert(payload):
         'quality': status & 0x07,
         'unstable': bool(status & 0x08),
         'sensor_id': '%04x' % sensor_id,
+        # v2 only; None on v1 units
+        'fw_version': payload[12] if payload[1] == 0x02 else None,
     }
 
 
