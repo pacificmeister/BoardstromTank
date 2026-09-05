@@ -1,3 +1,8 @@
+v0.5:
+	wait for localsettings (and bluetoothd) at startup instead of failing per advert (Pi 4 boot race: "com.victronenergy.settings does not exist")
+	restart our BLE discovery session every 60 s so readings keep updating when Venus 3.7x's own Bluetooth sensor scanner shares the adapter (values were frozen at the first reading on a Cerbo GX with two sensors)
+	log a warning when no sensor advert has been heard for 3 minutes
+
 v0.4:
 	support advert v2 (firmware version byte + boost status bits); parse both v1 and v2
 	(bytes 0-11 unchanged, v2 moves the checksum and appends a firmware-version byte)

@@ -59,7 +59,7 @@ sys.path.insert(
 from vedbus import VeDbusService  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = '0.4.0-beta'
+VERSION = '0.5.0-beta'
 COMPANY_ID = 0xFFFF
 MAGIC = 0x42
 # Supported advert versions -> payload length. v1 = 13 bytes; v2 = 14 (adds a
@@ -71,6 +71,17 @@ TIMEOUT_S = 300
 # Default VRM device instance; localsettings bumps it per device to stay
 # unique (ClassAndVrmInstance mechanism).
 DEVICE_INSTANCE_BASE = 330
+# Discovery restart cadence. Venus 3.7x runs its own BLE scanner
+# (dbus-ble-sensors) on the same adapter; when a discovery session is shared,
+# our DuplicateData filter does not reliably apply and the controller reports
+# each sensor ONCE, freezing the tank at its first reading (field report,
+# Cerbo GX 3.79, two sensors). Cycling our own session every minute forces a
+# scan restart, which clears the controller's duplicate cache, so at least one
+# fresh advert per sensor cycle always gets through.
+RESCAN_S = 60
+# Log a warning when nothing has been heard for this long (helps the next
+# report arrive with a diagnosis attached).
+NO_ADVERT_WARN_S = 180
 
 log = logging.getLogger('boardstrom-tank')
 
@@ -243,6 +254,9 @@ class Scanner(object):
     def __init__(self, bus):
         self.bus = bus
         self.tanks = {}
+        self.started = time.time()
+        self.last_advert = 0
+        self._last_warn = 0
         bus.add_signal_receiver(
             self._properties_changed,
             dbus_interface='org.freedesktop.DBus.Properties',
@@ -257,6 +271,7 @@ class Scanner(object):
         )
         self._start_discovery()
         GLib.timeout_add_seconds(30, self._tick)
+        GLib.timeout_add_seconds(RESCAN_S, self._rescan)
 
     def _start_discovery(self):
         adapter = self.bus.get_object('org.bluez', '/org/bluez/hci0')
@@ -301,6 +316,7 @@ class Scanner(object):
         adv = parse_advert(bytes(bytearray(payload)))
         if adv is None:
             return
+        self.last_advert = time.time()
         sid = adv['sensor_id']
         tank = self.tanks.get(sid)
         if tank is None:
@@ -317,6 +333,48 @@ class Scanner(object):
             tank.check_timeout()
         return True
 
+    def _rescan(self):
+        """Cycle our discovery session (see RESCAN_S) and warn on silence."""
+        try:
+            adapter = self.bus.get_object('org.bluez', '/org/bluez/hci0')
+            iface = dbus.Interface(adapter, 'org.bluez.Adapter1')
+            try:
+                iface.StopDiscovery()
+            except dbus.exceptions.DBusException:
+                pass  # not ours to stop, or already stopped
+            self._start_discovery()
+        except Exception:
+            log.exception('discovery restart failed (will retry)')
+        silent_since = self.last_advert or self.started
+        if time.time() - silent_since > NO_ADVERT_WARN_S and                 time.time() - self._last_warn > NO_ADVERT_WARN_S:
+            self._last_warn = time.time()
+            log.warning(
+                'no sensor adverts for %d s. Is the sensor in range and '
+                'powered? On a Cerbo, check Settings > Bluetooth / '
+                'Integrations if another scanner is active.',
+                int(time.time() - silent_since))
+        return True
+
+
+def wait_for_services(bus):
+    """Block until localsettings and bluetoothd are on the bus.
+
+    The service is supervised from /service and starts seconds after boot,
+    before com.victronenergy.settings exists; creating a tank service then
+    raises inside SettingsDevice (field report, Pi 4 on Venus 3.79). Waiting
+    here, instead of failing per advert, also keeps the log clean."""
+    waited = 0
+    for name in ('com.victronenergy.settings', 'org.bluez'):
+        announced = False
+        while not bus.name_has_owner(name):
+            if not announced:
+                log.info('waiting for %s to appear on the system bus', name)
+                announced = True
+            time.sleep(2)
+            waited += 2
+    if waited:
+        log.info('bus services up after %d s', waited)
+
 
 def main():
     logging.basicConfig(
@@ -325,6 +383,7 @@ def main():
     )
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
+    wait_for_services(bus)
     Scanner(bus)
     log.info('dbus-boardstrom-tank %s up; waiting for adverts', VERSION)
     GLib.MainLoop().run()
