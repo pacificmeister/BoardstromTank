@@ -59,7 +59,7 @@ sys.path.insert(
 from vedbus import VeDbusService  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = '0.5.0-beta'
+VERSION = '0.6.0-beta'
 COMPANY_ID = 0xFFFF
 MAGIC = 0x42
 # Supported advert versions -> payload length. v1 = 13 bytes; v2 = 14 (adds a
@@ -257,6 +257,7 @@ class Scanner(object):
         self.started = time.time()
         self.last_advert = 0
         self._last_warn = 0
+        self._scanning = set()  # adapter object paths we started discovery on
         bus.add_signal_receiver(
             self._properties_changed,
             dbus_interface='org.freedesktop.DBus.Properties',
@@ -273,11 +274,38 @@ class Scanner(object):
         GLib.timeout_add_seconds(30, self._tick)
         GLib.timeout_add_seconds(RESCAN_S, self._rescan)
 
+    def _adapters(self):
+        """Object paths of every BlueZ adapter (built-in and USB dongles).
+
+        Earlier versions scanned /org/bluez/hci0 only. A Cerbo with a USB
+        Bluetooth adapter has two, and the dongle is not necessarily hci0
+        (field report: Cerbo GX 3.79 + USB adapter, readings frozen at the
+        first value because we were listening on the weak built-in radio)."""
+        try:
+            om = dbus.Interface(self.bus.get_object('org.bluez', '/'),
+                                'org.freedesktop.DBus.ObjectManager')
+            objs = om.GetManagedObjects()
+        except dbus.exceptions.DBusException:
+            log.exception('cannot list Bluetooth adapters')
+            return []
+        return sorted(str(path) for path, ifaces in objs.items()
+                      if 'org.bluez.Adapter1' in ifaces)
+
     def _start_discovery(self):
-        adapter = self.bus.get_object('org.bluez', '/org/bluez/hci0')
+        paths = self._adapters()
+        if not paths:
+            log.warning('no Bluetooth adapter found (yet)')
+        for path in paths:
+            self._start_discovery_on(path)
+
+    def _start_discovery_on(self, path):
+        adapter = self.bus.get_object('org.bluez', path)
         props = dbus.Interface(adapter, 'org.freedesktop.DBus.Properties')
         iface = dbus.Interface(adapter, 'org.bluez.Adapter1')
         try:
+            # Even when powered, make sure the adapter is on.
+            if not props.Get('org.bluez.Adapter1', 'Powered'):
+                props.Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(True))
             iface.SetDiscoveryFilter({
                 'Transport': dbus.String('le'),
                 # Without DuplicateData BlueZ suppresses repeated adverts from
@@ -285,20 +313,32 @@ class Scanner(object):
                 'DuplicateData': dbus.Boolean(True),
             })
             iface.StartDiscovery()
-            log.info('BLE discovery started')
+            self._scanning.add(path)
+            log.info('BLE discovery started on %s', path)
         except dbus.exceptions.DBusException as e:
             if 'InProgress' in e.get_dbus_name():
                 # Someone else (e.g. Victron's own dbus-ble-sensors) already
                 # scans; BlueZ shares the discovery session and we still get
                 # PropertiesChanged events. Fine.
-                log.info('discovery already running (shared with another scanner)')
+                self._scanning.add(path)
+                log.info('discovery already running on %s (shared with another scanner)', path)
             else:
-                raise
-        # Even when powered, make sure the adapter is on.
-        if not props.Get('org.bluez.Adapter1', 'Powered'):
-            props.Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(True))
+                log.warning('discovery failed on %s: %s', path, e)
+
+    def _stop_discovery_all(self):
+        for path in list(self._scanning):
+            try:
+                iface = dbus.Interface(self.bus.get_object('org.bluez', path),
+                                       'org.bluez.Adapter1')
+                iface.StopDiscovery()
+            except dbus.exceptions.DBusException:
+                pass  # not ours to stop, or adapter gone
+        self._scanning.clear()
 
     def _interfaces_added(self, path, interfaces):
+        if 'org.bluez.Adapter1' in interfaces and str(path) not in self._scanning:
+            log.info('Bluetooth adapter appeared: %s', path)
+            self._start_discovery_on(str(path))
         dev = interfaces.get('org.bluez.Device1')
         if dev:
             self._handle_device(dev)
@@ -336,12 +376,7 @@ class Scanner(object):
     def _rescan(self):
         """Cycle our discovery session (see RESCAN_S) and warn on silence."""
         try:
-            adapter = self.bus.get_object('org.bluez', '/org/bluez/hci0')
-            iface = dbus.Interface(adapter, 'org.bluez.Adapter1')
-            try:
-                iface.StopDiscovery()
-            except dbus.exceptions.DBusException:
-                pass  # not ours to stop, or already stopped
+            self._stop_discovery_all()
             self._start_discovery()
         except Exception:
             log.exception('discovery restart failed (will retry)')

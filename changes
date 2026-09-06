@@ -1,3 +1,6 @@
+v0.6:
+	scan EVERY Bluetooth adapter (built-in and USB dongles), not just hci0; adapters that appear later are picked up too (field report: Cerbo GX with a USB Bluetooth adapter)
+
 v0.5:
 	wait for localsettings (and bluetoothd) at startup instead of failing per advert (Pi 4 boot race: "com.victronenergy.settings does not exist")
 	restart our BLE discovery session every 60 s so readings keep updating when Venus 3.7x's own Bluetooth sensor scanner shares the adapter (values were frozen at the first reading on a Cerbo GX with two sensors)
