@@ -1,3 +1,6 @@
+v0.7:
+	firmware beta.6 auto-ranging: publish /Boardstrom/RangeMode ('near' or 'far') and log it; parse-only, no behaviour change for older firmware
+
 v0.6:
 	scan EVERY Bluetooth adapter (built-in and USB dongles), not just hci0; adapters that appear later are picked up too (field report: Cerbo GX with a USB Bluetooth adapter)
 

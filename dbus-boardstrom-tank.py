@@ -14,7 +14,8 @@ the company id). v2 = 14 bytes; v1 = 13 bytes (bytes 0..11 identical):
   p2..3   distance mm u16 LE, 0xFFFF = no target
   p4..5   battery mV u16 LE, 0xFFFF = n/a
   p6      temperature degC i8, 0x7F = n/a
-  p7      status: bits 0-2 quality 0-7, bit 3 unstable, bit 4 boost, bit 5 boost-off
+  p7      status: bits 0-2 quality 0-7, bit 3 unstable, bit 4 boost (fw 3-4) /
+          far-range mode (fw 6+), bit 5 boost-off (fw 3-4)
   p8..9   sync counter u16 LE
   p10..11 sensor id u16 LE
   p12     v1: checksum XOR p0..p11 | v2: firmware version u8
@@ -59,7 +60,7 @@ sys.path.insert(
 from vedbus import VeDbusService  # noqa: E402
 from settingsdevice import SettingsDevice  # noqa: E402
 
-VERSION = '0.6.0-beta'
+VERSION = '0.7.0-beta'
 COMPANY_ID = 0xFFFF
 MAGIC = 0x42
 # Supported advert versions -> payload length. v1 = 13 bytes; v2 = 14 (adds a
@@ -103,7 +104,7 @@ def parse_advert(payload):
     temp = payload[6]
     status = payload[7]
     sensor_id = payload[10] | (payload[11] << 8)
-    return {
+    adv = {
         'distance_mm': None if distance == 0xFFFF else distance,
         'battery_v': None if battery == 0xFFFF else battery / 1000.0,
         'temperature_c': None if temp == 0x7F else (temp - 256 if temp > 127 else temp),
@@ -113,6 +114,15 @@ def parse_advert(payload):
         # v2 only; None on v1 units
         'fw_version': payload[12] if payload[1] == 0x02 else None,
     }
+    # Firmware beta.6+ auto-ranges: status bit 4 says the distance came from
+    # the far (0.3-3 m) sweep instead of the near (3 cm-1 m) one. The same bit
+    # meant "boost" on firmware 3-4 and is reserved on 5, so gate on fw.
+    fw = adv['fw_version']
+    if fw is not None and fw >= 6:
+        adv['range_mode'] = 'far' if status & 0x10 else 'near'
+    else:
+        adv['range_mode'] = None
+    return adv
 
 
 class TankService(object):
@@ -184,6 +194,8 @@ class TankService(object):
         svc.add_path('/Boardstrom/BatteryVoltage', None)
         svc.add_path('/Boardstrom/Temperature', None)
         svc.add_path('/Boardstrom/Quality', None)
+        # 'near' / 'far' on firmware beta.6+ (auto-ranging), None before.
+        svc.add_path('/Boardstrom/RangeMode', None)
         svc.register()
         log.info('registered %s (instance %d)', name, instance)
 
@@ -228,6 +240,7 @@ class TankService(object):
         svc['/Boardstrom/BatteryVoltage'] = adv['battery_v']
         svc['/Boardstrom/Temperature'] = adv['temperature_c']
         svc['/Boardstrom/Quality'] = adv['quality']
+        svc['/Boardstrom/RangeMode'] = adv['range_mode']
 
         d = adv['distance_mm']
         # Quality 0 = garbage echo; no-target = out of range. Keep the last
@@ -240,8 +253,9 @@ class TankService(object):
         # distance at empty and at full) is a copy-paste job from the log.
         if usable and time.time() - self._last_log > 55:
             self._last_log = time.time()
-            log.info('sensor %s: distance %d mm, level %s%%, quality %d',
-                     self.sensor_id, d, self.svc['/Level'], adv['quality'])
+            log.info('sensor %s: distance %d mm, level %s%%, quality %d%s',
+                     self.sensor_id, d, self.svc['/Level'], adv['quality'],
+                     ', range %s' % adv['range_mode'] if adv['range_mode'] else '')
 
     def check_timeout(self):
         if self.last_seen and time.time() - self.last_seen > TIMEOUT_S:
